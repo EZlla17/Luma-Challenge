@@ -482,7 +482,7 @@ function ImageEditToolbar({
   const inv = 1 / Math.max(canvasZoom, 0.001);
   const iconProps = { size: 14 as const, strokeWidth: 2 };
   return (
-    <div className="pointer-events-none absolute bottom-full left-1/2 z-[300] mb-5 flex w-0 justify-center">
+    <div className="pointer-events-none absolute bottom-full left-1/2 z-[1400] mb-5 flex w-0 justify-center">
       <div
         className="origin-bottom"
         style={{ transform: `scale(${inv})` }}
@@ -778,14 +778,18 @@ function ImageInlineChat({
   };
 
   return (
-    <div className="pointer-events-none absolute top-full left-1/2 z-[300] mt-5 flex w-0 justify-center">
+    <div
+      className={`pointer-events-none absolute top-full left-1/2 mt-5 flex w-0 justify-center ${
+        isExpanded ? "z-[1400]" : "z-[1300]"
+      }`}
+    >
       <div className="origin-top" style={{ transform: `scale(${inv})` }}>
         {isExpanded ? (
           <div className="relative">
             {filteredFrameworks.length > 0 && (
               <div
                 data-prompt-framework
-                className="absolute top-[calc(100%+8px)] left-0 w-[min(15rem,78vw)] max-w-[18rem] max-h-[140px] rounded-xl bg-white shadow-lg border border-neutral-200 overflow-y-auto text-[13px] py-2 pointer-events-auto [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:my-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-neutral-300 [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-clip-padding [&::-webkit-scrollbar-thumb]:rounded-full"
+                className="absolute top-[calc(100%+8px)] left-0 z-[1410] w-[min(15rem,78vw)] max-w-[18rem] max-h-[140px] rounded-xl bg-white shadow-lg border border-neutral-200 overflow-y-auto text-[13px] py-2 pointer-events-auto [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:my-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-neutral-300 [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-clip-padding [&::-webkit-scrollbar-thumb]:rounded-full"
               >
                 {filteredFrameworks.map((f) => (
                   <button
@@ -886,7 +890,7 @@ function ImageInlineChat({
                           )}
                         </div>
                         {showImagePicker && (
-                          <div className="absolute bottom-[calc(100%+8px)] left-0 w-[200px] rounded-xl bg-white shadow-lg border border-neutral-200 overflow-hidden text-[13px] z-[400] flex flex-col">
+                          <div className="absolute bottom-[calc(100%+8px)] left-0 z-[1420] w-[200px] rounded-xl bg-white shadow-lg border border-neutral-200 overflow-hidden text-[13px] flex flex-col">
                             <button
                               type="button"
                               className="w-full text-left px-3 py-2.5 hover:bg-neutral-100 font-medium text-neutral-900 border-b border-neutral-100 flex items-center gap-2"
@@ -3030,6 +3034,12 @@ export default function Home() {
                     style={{
                       transform: `translate(${frameOffsets[`${workspace.id}|${frame.id}`]?.x ?? 0}px, ${frameOffsets[`${workspace.id}|${frame.id}`]?.y ?? 0}px)`,
                       cursor: "default",
+                      zIndex:
+                        activeFrameSelection === `${workspace.id}|${frame.id}`
+                          ? 1300
+                          : selectedFrameKeys.includes(`${workspace.id}|${frame.id}`)
+                            ? 1200
+                            : 0,
                     }}
                     onPointerDown={(e) => {
                       const el = e.target as HTMLElement;
