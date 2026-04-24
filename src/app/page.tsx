@@ -2793,12 +2793,15 @@ export default function Home() {
           />
           {clipAssets.map((clip) => {
             const selected = selectedClipIds.includes(clip.id);
+            const shouldDimClip = isPathView && activeFrameSelection;
             return (
               <div
                 key={clip.id}
                 data-canvas-clip
                 data-clip-id={clip.id}
-                className={`pointer-events-auto absolute ${selected ? "ring-2 ring-black" : ""}`}
+                className={`pointer-events-auto absolute ${
+                  selected ? "ring-2 ring-black" : ""
+                } ${shouldDimClip ? "opacity-10 saturate-0" : ""}`}
                 style={{
                   left: clip.x,
                   top: clip.y,
