@@ -1991,6 +1991,47 @@ export default function Home() {
   }, [applyPinchWheel]);
 
   const handleCreateAutoLayoutFrame = useCallback(() => {
+    const findOpenSpotForNewFrame = (width: number, height: number) => {
+      const viewport = viewportRef.current;
+      const zoom = Math.max(view.zoom, 0.001);
+      const fallbackX = WORLD_CX;
+      const fallbackY = WORLD_CY;
+      if (!viewport) return { x: fallbackX, y: fallbackY };
+
+      const startX = (viewport.clientWidth / 2 - view.pan.x) / zoom;
+      const startY = (viewport.clientHeight / 2 - view.pan.y) / zoom;
+
+      const occupied: Array<{ x: number; y: number; w: number; h: number }> = [];
+      stickyNotes.forEach((n) => occupied.push({ x: n.x, y: n.y, w: n.width, h: n.height }));
+      clipAssets.forEach((c) => occupied.push({ x: c.x, y: c.y, w: c.width, h: c.height }));
+      Object.values(workspaceRefs.current).forEach((el) => {
+        if (!el) return;
+        occupied.push({ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight });
+      });
+
+      const intersects = (ax: number, ay: number, aw: number, ah: number) =>
+        occupied.some((b) => ax < b.x + b.w && ax + aw > b.x && ay < b.y + b.h && ay + ah > b.y);
+
+      const gap = 48;
+      const step = 36;
+      const maxRadius = 40;
+      const baseX = startX - width / 2;
+      const baseY = startY - height / 2;
+
+      for (let r = 0; r <= maxRadius; r += 1) {
+        const radius = r * step;
+        for (let i = 0; i < 16; i += 1) {
+          const theta = (Math.PI * 2 * i) / 16;
+          const x = baseX + Math.cos(theta) * radius;
+          const y = baseY + Math.sin(theta) * radius;
+          if (!intersects(x - gap, y - gap, width + gap * 2, height + gap * 2)) {
+            return { x, y };
+          }
+        }
+      }
+      return { x: baseX, y: baseY };
+    };
+
     if (selectedClipIds.length > 0) {
       const selectedClips = clipAssets.filter((c) => selectedClipIds.includes(c.id));
       if (selectedClips.length === 0) return;
@@ -2028,14 +2069,17 @@ export default function Home() {
         const newFrameId = `f-${Date.now()}`;
         const standaloneCount = workspaces.filter((w) => w.isStandalone).length;
         const frameName = `Frame ${standaloneCount + 1}`;
+        const estimatedFrameW = Math.max(220, width + 48);
+        const estimatedFrameH = Math.max(220, height + 96);
+        const drop = findOpenSpotForNewFrame(estimatedFrameW, estimatedFrameH);
         setWorkspaces((prev) => [
           ...prev,
           {
             id: newWorkspaceId,
             title: frameName,
             isStandalone: true,
-            x: minX,
-            y: maxY + 80,
+            x: drop.x,
+            y: drop.y,
             frames: [
               {
                 id: newFrameId,
@@ -2066,8 +2110,8 @@ export default function Home() {
     const standaloneCount = workspaces.filter(w => w.isStandalone).length;
     const frameName = `Frame ${standaloneCount + 1}`;
 
-    let minX = Infinity, maxY = -Infinity;
-    let foundAny = false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let foundAnyBounds = false;
 
     if (viewportRef.current) {
       const vRect = viewportRef.current.getBoundingClientRect();
@@ -2075,26 +2119,24 @@ export default function Home() {
         const el = assetRefs.current[key];
         if (!el) continue;
         const aRect = el.getBoundingClientRect();
-        
+
         // Convert screen coordinates to world coordinates
         const wx = (aRect.left - vRect.left - view.pan.x) / view.zoom;
+        const wy = (aRect.top - vRect.top - view.pan.y) / view.zoom;
+        const wxRight = (aRect.right - vRect.left - view.pan.x) / view.zoom;
         const wyBottom = (aRect.bottom - vRect.top - view.pan.y) / view.zoom;
 
         minX = Math.min(minX, wx);
+        minY = Math.min(minY, wy);
+        maxX = Math.max(maxX, wxRight);
         maxY = Math.max(maxY, wyBottom);
-        foundAny = true;
+        foundAnyBounds = true;
       }
     }
 
-    let dropX = WORLD_CX;
-    let dropY = WORLD_CY;
-    if (foundAny) {
-      dropX = minX;
-      dropY = maxY + 80; // place below the lowest selected item
-    } else if (typeof window !== "undefined") {
-      dropX = (window.innerWidth / 2 - view.pan.x) / view.zoom - 100;
-      dropY = (window.innerHeight / 2 - view.pan.y) / view.zoom - 100;
-    }
+    const estimatedFrameW = foundAnyBounds ? Math.max(220, maxX - minX + 48) : 420;
+    const estimatedFrameH = foundAnyBounds ? Math.max(220, maxY - minY + 96) : 320;
+    const drop = findOpenSpotForNewFrame(estimatedFrameW, estimatedFrameH);
 
     const clonedAssets = selectedItems.map(({ asset }, i) => ({
       ...asset,
@@ -2107,8 +2149,8 @@ export default function Home() {
         id: newWorkspaceId,
         title: frameName,
         isStandalone: true,
-        x: dropX,
-        y: dropY,
+        x: drop.x,
+        y: drop.y,
         frames: [
           {
             id: newFrameId,
@@ -2132,7 +2174,7 @@ export default function Home() {
       return next;
     });
     setSelectedFrameImages([]);
-  }, [clipAssets, selectedClipIds, selectedFrameImages, workspaces, view]);
+  }, [clipAssets, selectedClipIds, selectedFrameImages, stickyNotes, workspaces, view]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
