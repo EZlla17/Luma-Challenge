@@ -61,6 +61,7 @@ const WORLD_W = 8000;
 const WORLD_H = 6000;
 const WORLD_CX = WORLD_W / 2;
 const WORLD_CY = WORLD_H / 2;
+const MARQUEE_DRAG_THRESHOLD_PX = 6;
 const ZOOM_MIN = 0.02;
 const ZOOM_MAX = 8;
 const DEFAULT_ZOOM = 0.52;
@@ -505,7 +506,7 @@ function ImageEditToolbar({
             <Tag {...iconProps} />
           </ToolbarIconBtn>
           <ToolbarIconBtn label="Crop clip" onClick={onOpenClip}>
-            <Crop {...iconProps} />
+            <Scissors {...iconProps} />
           </ToolbarIconBtn>
           <ToolbarIconBtn label="Info" disabled>
             <Info {...iconProps} />
@@ -1111,6 +1112,7 @@ export default function Home() {
   const [selectedFrameImages, setSelectedFrameImages] = useState<string[]>([]);
   const selectedFrameImage = selectedFrameImages[0] || null;
   const [selectedFrame, setSelectedFrame] = useState<string | null>(null);
+  const [selectedFrameKeys, setSelectedFrameKeys] = useState<string[]>([]);
   const [frameOffsets, setFrameOffsets] = useState<Record<string, { x: number; y: number }>>({});
   const [draggingFrameKey, setDraggingFrameKey] = useState<string | null>(null);
   const [clipAssets, setClipAssets] = useState<ClipAsset[]>([]);
@@ -1141,6 +1143,13 @@ export default function Home() {
   const [lineageSegments, setLineageSegments] = useState<
     Array<{ workspaceId: string; fromX: number; fromY: number; toX: number; toY: number }>
   >([]);
+  const [marqueeSelection, setMarqueeSelection] = useState<{
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+  } | null>(null);
+  const [isMarqueeSelecting, setIsMarqueeSelecting] = useState(false);
   const dragLastRef = useRef({ x: 0, y: 0 });
   const clipImageRef = useRef<HTMLImageElement | null>(null);
 
@@ -1553,71 +1562,16 @@ export default function Home() {
 
   const queuePlaceFrameInWorkspaceGap = useCallback((workspaceId: string, frameId: string) => {
     window.requestAnimationFrame(() => {
-      const wsEl = workspaceRefs.current[workspaceId];
       const frameKey = `${workspaceId}|${frameId}`;
-      const frameEl = frameRefs.current[frameKey];
-      if (!wsEl || !frameEl) return;
-
-      const wsRect = wsEl.getBoundingClientRect();
-      const nextRect = frameEl.getBoundingClientRect();
-      const frameW = Math.max(1, nextRect.width);
-      const frameH = Math.max(1, nextRect.height);
-      const pad = 24;
-      const gap = 24;
-      const step = 24;
-
-      const maxX = Math.max(pad, wsRect.width - frameW - pad);
-      const maxY = Math.max(pad, wsRect.height - frameH - pad);
-
-      const occupied: Array<{ x: number; y: number; w: number; h: number }> = [];
-      Object.entries(frameRefs.current).forEach(([key, el]) => {
-        if (!el || key === frameKey || !key.startsWith(`${workspaceId}|`)) return;
-        const r = el.getBoundingClientRect();
-        occupied.push({
-          x: r.left - wsRect.left,
-          y: r.top - wsRect.top,
-          w: r.width,
-          h: r.height,
-        });
-      });
-
-      const intersects = (x: number, y: number) =>
-        occupied.some(
-          (b) =>
-            x < b.x + b.w + gap &&
-            x + frameW > b.x - gap &&
-            y < b.y + b.h + gap &&
-            y + frameH > b.y - gap,
-        );
-
-      let targetX = pad;
-      let targetY = pad;
-      let found = false;
-      for (let y = pad; y <= maxY; y += step) {
-        for (let x = pad; x <= maxX; x += step) {
-          if (!intersects(x, y)) {
-            targetX = x;
-            targetY = y;
-            found = true;
-            break;
-          }
-        }
-        if (found) break;
-      }
-
-      const currentX = nextRect.left - wsRect.left;
-      const currentY = nextRect.top - wsRect.top;
-      const origin = frameOffsets[frameKey] ?? { x: 0, y: 0 };
-      const dx = targetX - currentX;
-      const dy = targetY - currentY;
-      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-
+      if (!frameRefs.current[frameKey]) return;
+      // Keep generated frames in the workspace's normal vertical flow:
+      // each new frame appears neatly below the previous one.
       setFrameOffsets((prev) => ({
         ...prev,
-        [frameKey]: { x: origin.x + dx, y: origin.y + dy },
+        [frameKey]: { x: 0, y: 0 },
       }));
     });
-  }, [frameOffsets]);
+  }, []);
 
   const markInlineFeedbackStage = (id: string | undefined, stage: FeedbackStage) => {
     if (!id) return;
@@ -1722,82 +1676,74 @@ export default function Home() {
   };
 
   const deleteSelectedTarget = useCallback(() => {
+    const hasAnySelection =
+      selectedClipIds.length > 0 ||
+      selectedFrameImages.length > 0 ||
+      selectedFrameKeys.length > 0 ||
+      Boolean(selectedFrame);
+    if (!hasAnySelection) return;
+
     if (selectedClipIds.length > 0) {
       setClipAssets((prev) => prev.filter((c) => !selectedClipIds.includes(c.id)));
-      setSelectedClipIds([]);
-      setSelectedFrame(null);
-      setSelectedWorkspace(null);
-      setLineageSegments([]);
-      setIsPathView(false);
-      return;
-    }
-    if (selectedFrameImages.length > 0) {
-      const stickyIds = selectedFrameImages
-        .filter((id) => id.startsWith("sticky|note|"))
-        .map((id) => id.split("|")[2]);
-      
-      if (stickyIds.length > 0) {
-        setStickyNotes((prev) => prev.filter((note) => !stickyIds.includes(note.id)));
-      }
-
-      const assetKeys = selectedFrameImages.filter((id) => !id.startsWith("sticky|note|"));
-      
-      if (assetKeys.length > 0) {
-        setWorkspaces((prev) =>
-          prev
-            .map((ws) => {
-              return {
-                ...ws,
-                frames: ws.frames
-                  .map((f) => {
-                    const keysToRemove = assetKeys.filter((k) => k.startsWith(`${ws.id}|${f.id}|`));
-                    if (keysToRemove.length === 0) return f;
-                    const assetIdsToRemove = keysToRemove.map((k) => k.split("|")[2]);
-                    return {
-                      ...f,
-                      assets: f.assets.filter((asset) => !assetIdsToRemove.includes(asset.id)),
-                    };
-                  })
-                  .filter((f) => f.assets.length > 0),
-              };
-            })
-            .filter((ws) => ws.frames.length > 0),
-        );
-        assetKeys.forEach((key) => {
-          delete assetRefs.current[key];
-        });
-      }
-
-      setSelectedFrameImages([]);
-      setSelectedFrame(null);
-      setSelectedWorkspace(null);
-      setLineageSegments([]);
-      setIsPathView(false);
-      return;
     }
 
-    if (!selectedFrame) return;
-    const [workspaceId, frameId] = selectedFrame.split("|");
-    if (!workspaceId || !frameId) return;
-    setWorkspaces((prev) =>
-      prev
-        .map((ws) =>
-          ws.id !== workspaceId
-            ? ws
-            : { ...ws, frames: ws.frames.filter((f) => f.id !== frameId) },
-        )
-        .filter((ws) => ws.frames.length > 0),
+    const stickyIds = selectedFrameImages
+      .filter((id) => id.startsWith("sticky|note|"))
+      .map((id) => id.split("|")[2]);
+    if (stickyIds.length > 0) {
+      setStickyNotes((prev) => prev.filter((note) => !stickyIds.includes(note.id)));
+    }
+
+    const assetKeys = selectedFrameImages.filter((id) => !id.startsWith("sticky|note|"));
+    const frameKeysToDelete = Array.from(
+      new Set([
+        ...selectedFrameKeys,
+        ...(selectedFrame ? [selectedFrame] : []),
+      ]),
     );
-    Object.keys(assetRefs.current).forEach((k) => {
-      if (k.startsWith(`${workspaceId}|${frameId}|`)) delete assetRefs.current[k];
+    if (assetKeys.length > 0 || frameKeysToDelete.length > 0) {
+      setWorkspaces((prev) =>
+        prev
+          .map((ws) => {
+            let nextFrames = ws.frames.map((f) => {
+              const keysToRemove = assetKeys.filter((k) => k.startsWith(`${ws.id}|${f.id}|`));
+              if (keysToRemove.length === 0) return f;
+              const assetIdsToRemove = keysToRemove.map((k) => k.split("|")[2]);
+              return {
+                ...f,
+                assets: f.assets.filter((asset) => !assetIdsToRemove.includes(asset.id)),
+              };
+            });
+            if (frameKeysToDelete.length > 0) {
+              nextFrames = nextFrames.filter((f) => !frameKeysToDelete.includes(`${ws.id}|${f.id}`));
+            }
+            return {
+              ...ws,
+              frames: nextFrames.filter((f) => f.assets.length > 0),
+            };
+          })
+          .filter((ws) => ws.frames.length > 0),
+      );
+    }
+
+    assetKeys.forEach((key) => {
+      delete assetRefs.current[key];
     });
-    delete frameRefs.current[`${workspaceId}|${frameId}`];
+    frameKeysToDelete.forEach((frameKey) => {
+      Object.keys(assetRefs.current).forEach((k) => {
+        if (k.startsWith(`${frameKey}|`)) delete assetRefs.current[k];
+      });
+      delete frameRefs.current[frameKey];
+    });
+
     setSelectedFrameImages([]);
+    setSelectedClipIds([]);
+    setSelectedFrameKeys([]);
     setSelectedFrame(null);
     setSelectedWorkspace(null);
     setLineageSegments([]);
     setIsPathView(false);
-  }, [selectedClipIds, selectedFrame, selectedFrameImages]);
+  }, [selectedClipIds, selectedFrame, selectedFrameImages, selectedFrameKeys]);
 
   const activeFrameSelection = selectedFrameImages.length > 0
     ? selectedFrameImages[0].split("|").slice(0, 2).join("|")
@@ -2246,7 +2192,7 @@ export default function Home() {
 
       if (
         !inField &&
-        (selectedFrameImage || selectedFrame || selectedClipIds.length > 0) &&
+        (selectedFrameImage || selectedFrame || selectedFrameKeys.length > 0 || selectedClipIds.length > 0) &&
         (e.key === "Backspace" || e.key === "Delete")
       ) {
         e.preventDefault();
@@ -2266,7 +2212,7 @@ export default function Home() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener("keyup", onKeyUp, { capture: true });
     };
-  }, [centerView, commandSelectLocked, deleteSelectedTarget, selectedFrame, selectedFrameImages, selectedClipIds.length, handleCreateAutoLayoutFrame]);
+  }, [centerView, commandSelectLocked, deleteSelectedTarget, selectedFrame, selectedFrameImages, selectedFrameKeys.length, selectedClipIds.length, handleCreateAutoLayoutFrame]);
 
   /** Two-finger / normal wheel pan: must use a non-passive native listener; React’s onWheel is passive. */
   const onViewportWheel = useCallback((e: WheelEvent) => {
@@ -2297,14 +2243,75 @@ export default function Home() {
     };
   }, [onViewportWheel]);
 
+  const updateSelectionFromMarquee = useCallback((box: { left: number; top: number; right: number; bottom: number }) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const intersects = (rect: DOMRect) =>
+      rect.right >= box.left &&
+      rect.left <= box.right &&
+      rect.bottom >= box.top &&
+      rect.top <= box.bottom;
+
+    const imageKeys = Array.from(viewport.querySelectorAll<HTMLElement>("[data-image-key]"))
+      .filter((el) => intersects(el.getBoundingClientRect()))
+      .map((el) => el.dataset.imageKey)
+      .filter((v): v is string => Boolean(v));
+    const clipIds = Array.from(viewport.querySelectorAll<HTMLElement>("[data-clip-id]"))
+      .filter((el) => intersects(el.getBoundingClientRect()))
+      .map((el) => el.dataset.clipId)
+      .filter((v): v is string => Boolean(v));
+    const frameKeys = Array.from(viewport.querySelectorAll<HTMLElement>("[data-frame-key]"))
+      .filter((el) => intersects(el.getBoundingClientRect()))
+      .map((el) => el.dataset.frameKey)
+      .filter((v): v is string => Boolean(v));
+
+    setSelectedFrameImages(imageKeys);
+    setSelectedClipIds(clipIds);
+    setSelectedFrameKeys(frameKeys);
+    setSelectedFrame(null);
+    setSelectedWorkspace(null);
+    setIsPathView(false);
+  }, []);
+
   /** Canvas click (not on image / floating toolbar) clears selection; then space / middle-button pan */
   const onViewportPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       const t = e.target as HTMLElement;
+      const panWithSpace = spaceDown && e.button === 0;
+      const panWithMiddle = e.button === 1;
+      if (!panWithSpace && !panWithMiddle && e.button === 0) {
+        const startedOnInteractive =
+          Boolean(t.closest("[data-surface='frame']")) ||
+          Boolean(t.closest("[data-image-slot]")) ||
+          Boolean(t.closest("[data-canvas-clip]")) ||
+          Boolean(t.closest("[data-floating-toolbar]")) ||
+          Boolean(t.closest("[data-image-inline-chat]")) ||
+          Boolean(t.closest("[data-prompt-framework]"));
+        if (!startedOnInteractive) {
+          const viewportRect = e.currentTarget.getBoundingClientRect();
+          const localX = e.clientX - viewportRect.left;
+          const localY = e.clientY - viewportRect.top;
+          // Click blank canvas should clear immediately; drag continues into marquee selection.
+          setPickingStyleTarget(null);
+          setIsPathView(false);
+          setMainShowImagePicker(false);
+          setSelectedFrameImages([]);
+          setSelectedClipIds([]);
+          setSelectedFrameKeys([]);
+          setSelectedFrame(null);
+          setSelectedWorkspace(null);
+          setMarqueeSelection({ startX: localX, startY: localY, endX: localX, endY: localY });
+          setIsMarqueeSelecting(true);
+          e.currentTarget.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+
       if (
         !t.closest("[data-surface='frame']") &&
         !t.closest("[data-surface='workplace']") &&
         !t.closest("[data-image-slot]") &&
+        !t.closest("[data-canvas-clip]") &&
         !t.closest("[data-floating-toolbar]") &&
         !t.closest("[data-image-inline-chat]") &&
         !t.closest("[data-prompt-framework]")
@@ -2314,12 +2321,11 @@ export default function Home() {
         setMainShowImagePicker(false);
         setSelectedFrameImages([]);
         setSelectedClipIds([]);
+        setSelectedFrameKeys([]);
         setSelectedFrame(null);
         setSelectedWorkspace(null);
       }
 
-      const panWithSpace = spaceDown && e.button === 0;
-      const panWithMiddle = e.button === 1;
       if (!panWithSpace && !panWithMiddle) return;
       e.preventDefault();
       setIsPanning(true);
@@ -2331,6 +2337,22 @@ export default function Home() {
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (isMarqueeSelecting && marqueeSelection) {
+        const viewportRect = e.currentTarget.getBoundingClientRect();
+        const endX = e.clientX - viewportRect.left;
+        const endY = e.clientY - viewportRect.top;
+        setMarqueeSelection((prev) => (prev ? { ...prev, endX, endY } : prev));
+        const movedX = Math.abs(endX - marqueeSelection.startX);
+        const movedY = Math.abs(endY - marqueeSelection.startY);
+        if (Math.max(movedX, movedY) < MARQUEE_DRAG_THRESHOLD_PX) return;
+        updateSelectionFromMarquee({
+          left: Math.min(marqueeSelection.startX, endX) + viewportRect.left,
+          right: Math.max(marqueeSelection.startX, endX) + viewportRect.left,
+          top: Math.min(marqueeSelection.startY, endY) + viewportRect.top,
+          bottom: Math.max(marqueeSelection.startY, endY) + viewportRect.top,
+        });
+        return;
+      }
       if (!isPanning) return;
       const dx = e.clientX - dragLastRef.current.x;
       const dy = e.clientY - dragLastRef.current.y;
@@ -2340,18 +2362,22 @@ export default function Home() {
         pan: { x: v.pan.x + dx, y: v.pan.y + dy },
       }));
     },
-    [isPanning],
+    [isMarqueeSelecting, isPanning, marqueeSelection, updateSelectionFromMarquee],
   );
 
   const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPanning) return;
-    setIsPanning(false);
+    if (!isPanning && !isMarqueeSelecting) return;
+    if (isPanning) setIsPanning(false);
+    if (isMarqueeSelecting) {
+      setIsMarqueeSelecting(false);
+      setMarqueeSelection(null);
+    }
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-  }, [isPanning]);
+  }, [isMarqueeSelecting, isPanning]);
 
   const zoomPercentLabel = `${Math.round(view.zoom * 100)}%`;
 
@@ -2451,6 +2477,33 @@ export default function Home() {
       window.addEventListener("pointerup", onUp);
     },
     [view.zoom],
+  );
+
+  const startStickyMove = useCallback(
+    (e: React.PointerEvent<HTMLElement>, noteId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const zoom = Math.max(view.zoom, 0.001);
+      const note = stickyNotes.find((n) => n.id === noteId);
+      if (!note) return;
+      const origin = { x: note.x, y: note.y };
+      const onMove = (evt: PointerEvent) => {
+        const dx = (evt.clientX - startX) / zoom;
+        const dy = (evt.clientY - startY) / zoom;
+        setStickyNotes((prev) =>
+          prev.map((n) => (n.id === noteId ? { ...n, x: origin.x + dx, y: origin.y + dy } : n)),
+        );
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [stickyNotes, view.zoom],
   );
 
   const startClipMove = useCallback(
@@ -2660,9 +2713,22 @@ export default function Home() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerLeave={(e) => {
-          if (isPanning) onPointerUp(e);
+          if (isPanning || isMarqueeSelecting) onPointerUp(e);
         }}
       >
+        {marqueeSelection ? (
+          <div className="pointer-events-none absolute inset-0 z-[120]">
+            <div
+              className="absolute border border-neutral-700/70 bg-neutral-300/20"
+              style={{
+                left: Math.min(marqueeSelection.startX, marqueeSelection.endX),
+                top: Math.min(marqueeSelection.startY, marqueeSelection.endY),
+                width: Math.abs(marqueeSelection.endX - marqueeSelection.startX),
+                height: Math.abs(marqueeSelection.endY - marqueeSelection.startY),
+              }}
+            />
+          </div>
+        ) : null}
         <div
           className="relative will-change-transform"
           style={{
@@ -2684,6 +2750,8 @@ export default function Home() {
             return (
               <div
                 key={clip.id}
+                data-canvas-clip
+                data-clip-id={clip.id}
                 className={`pointer-events-auto absolute ${selected ? "ring-2 ring-black" : ""}`}
                 style={{
                   left: clip.x,
@@ -2701,6 +2769,7 @@ export default function Home() {
                   } else {
                     setSelectedClipIds([clip.id]);
                   }
+                  setSelectedFrameKeys([]);
                   setSelectedFrameImages([]);
                   setSelectedFrame(null);
                   setSelectedWorkspace(null);
@@ -2728,6 +2797,7 @@ export default function Home() {
               <div
                 key={note.id}
                 data-image-slot
+                data-image-key={stickyKey}
                 className={`pointer-events-auto absolute ${
                   selected
                     ? "rounded-none ring-2 ring-black"
@@ -2763,11 +2833,13 @@ export default function Home() {
                     }
                     setSelectedFrameImages([stickyKey]);
                     setSelectedClipIds([]);
+                    setSelectedFrameKeys([]);
                     setSelectedFrame(null);
                     setHoveredFrame(null);
                     setHoveredFrameImage(null);
                     setSelectedWorkspace(null);
                     setIsPathView(false);
+                    startStickyMove(e, note.id);
                   }}
                   onPointerEnter={() => {
                     setHoveredFrameImage(stickyKey);
@@ -2837,6 +2909,7 @@ export default function Home() {
                   }
                   setSelectedFrameImages([]);
                   setSelectedClipIds([]);
+                  setSelectedFrameKeys([]);
                   setSelectedFrame(null);
                   setSelectedWorkspace(null);
                   setIsPathView(false);
@@ -2924,6 +2997,7 @@ export default function Home() {
                   <div
                     key={frame.id}
                     data-surface="frame"
+                    data-frame-key={`${workspace.id}|${frame.id}`}
                     onContextMenu={(e) => {
                       if (selectedFrameImages.length > 0) return; // let image right click handle it
                       e.preventDefault();
@@ -2941,6 +3015,7 @@ export default function Home() {
                       draggingFrameKey === `${workspace.id}|${frame.id}` ? "" : "transition-all"
                     } ${
                       selectedFrame === `${workspace.id}|${frame.id}`
+                      || selectedFrameKeys.includes(`${workspace.id}|${frame.id}`)
                         ? "rounded-none ring-2 ring-black"
                         : hoveredFrame === `${workspace.id}|${frame.id}`
                           ? "ring-2 ring-black"
@@ -2968,6 +3043,7 @@ export default function Home() {
                       }
                       setSelectedFrameImages([]);
                       setSelectedClipIds([]);
+                      setSelectedFrameKeys([]);
                       setSelectedFrame(`${workspace.id}|${frame.id}`);
                       setSelectedWorkspace(null);
                       startFrameMove(e, `${workspace.id}|${frame.id}`);
@@ -3017,7 +3093,7 @@ export default function Home() {
                     ) : null}
                     {frame.name ? (
                       <div
-                        className="absolute bottom-full left-0 z-[250] mb-1.5 origin-bottom-left"
+                        className="absolute bottom-full left-0 z-[250] mb-0.5 origin-bottom-left"
                         style={{
                           transform: `scale(${1 / Math.max(view.zoom, 0.001)})`,
                         }}
@@ -3110,6 +3186,7 @@ export default function Home() {
                           <div
                             key={asset.id}
                             data-image-slot
+                            data-image-key={key}
                             ref={(el) => {
                               assetRefs.current[key] = el;
                             }}
@@ -3168,6 +3245,7 @@ export default function Home() {
                                   setSelectedFrameImages([key]);
                                 }
                                 setSelectedClipIds([]);
+                                setSelectedFrameKeys([]);
                                 setSelectedFrame(null);
                                 setHoveredFrame(null);
                                 setHoveredFrameImage(null);
